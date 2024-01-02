@@ -1,0 +1,130 @@
+import pyodbc
+import pandas as pd
+import azure.functions as func
+import json
+import pymysql
+def establish_db_connection(db_type, server, database_name, username, password):
+    try:
+        if db_type == "mysql":
+            connection = pymysql.connect(host=server, user=username, password=password, db=database_name)
+        elif db_type == "sqlserver":
+            connection_string = f"Driver={{ODBC Driver 17 for SQL Server}};Server={server};Database={database_name};Uid={username};Pwd={password};"
+            connection = pyodbc.connect(connection_string)
+        else:
+            raise ValueError("Invalid database type: Only 'mysql' and 'sqlserver' are supported.")
+        print('Connection Success')
+        return connection
+    except pymysql.Error as pymysql_error:
+        error_message = f'MySQL Connection Error: {str(pymysql_error)}'
+        print(error_message)
+        raise Exception(error_message)
+    except pyodbc.Error as pyodbc_error:
+        error_message = f'SQL Server Connection Error: {str(pyodbc_error)}'
+        print(error_message)
+        raise Exception(error_message)
+    except Exception as e:
+        error_message = f'General Connection Error: {str(e)}'
+        print(error_message)
+        raise Exception(error_message)
+def retrieve_table_column_info(connection, db_type, table_name):
+    try:
+        cursor = connection.cursor()
+        if db_type == "mysql":
+            cursor.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s", (table_name,))
+        elif db_type == "sqlserver":
+            cursor.execute("""
+                SELECT t.name AS table_name, c.name AS column_name,
+                       tp.name AS data_type
+                FROM sys.tables AS t
+                INNER JOIN sys.columns AS c ON t.object_id = c.object_id
+                INNER JOIN sys.systypes AS tp ON c.system_type_id = tp.xtype
+                WHERE t.name = ?
+            """, table_name)
+        else:
+            raise ValueError("Invalid database type: Only 'mysql' and 'sqlserver' are supported.")
+        table_column_info = cursor.fetchall()
+        cursor.close()
+        if not table_column_info:
+            error_message = f'Table {table_name} not found or has no columns.'
+            raise ValueError(error_message)
+        return table_column_info
+    except pymysql.Error as pymysql_error:
+        error_message = f'MySQL Query Error: {str(pymysql_error)}'
+        print(error_message)
+        raise Exception(error_message)
+    except pyodbc.Error as pyodbc_error:
+        error_message = f'SQL Server Query Error: {str(pyodbc_error)}'
+        print(error_message)
+        raise Exception(error_message)
+    except Exception as e:
+        error_message = f'General Query Error: {str(e)}'
+        print(error_message)
+        raise Exception(error_message)
+def main(req_body):
+    mydb = None
+    try:
+        # req_body = req.get_json()
+        if not req_body:
+            error_response = {
+                "success": "false",
+                "errType": "BAD REQUEST",
+                "message": "Request body is required."
+            }
+            return func.HttpResponse(json.dumps(error_response), mimetype="application/json", status_code=400)
+        database_credentials = req_body.get("database_credentials")
+        if not database_credentials:
+            error_response = {
+                "success": "false",
+                "errType": "BAD REQUEST",
+                "message": "Database credentials are required."
+            }
+            return func.HttpResponse(json.dumps(error_response), mimetype="application/json", status_code=400)
+        db_type = req_body.get("db_type")
+        server = database_credentials.get("server")
+        database_name = database_credentials.get("database_name")
+        username = database_credentials.get("username")
+        password = database_credentials.get("password")
+        print(username, db_type, password)
+        if not all([db_type, server, database_name, username, password]):
+            error_response = {
+                "success": "false",
+                "errType": "BAD REQUEST",
+                "message": "Incomplete database credentials."
+            }
+            return func.HttpResponse(json.dumps(error_response), mimetype="application/json", status_code=400)
+        mydb = establish_db_connection(db_type, server, database_name, username, password)
+        table_name = req_body.get("table_name")
+        if not table_name:
+            error_response = {
+                "success": "false",
+                "errType": "BAD REQUEST",
+                "message": "Table name not provided in the query parameters."
+            }
+            return func.HttpResponse(json.dumps(error_response), mimetype="application/json", status_code=400)
+        table_column_info = retrieve_table_column_info(mydb, db_type, table_name)
+        print(table_column_info)
+        table_column_info_dict = [
+            {"column_name": column_name, "data_type": data_type}
+            for column_name, data_type in table_column_info
+        ]
+        print(table_column_info_dict)
+        df = pd.DataFrame(table_column_info_dict, columns=["column_name", "data_type"])
+        df_json = df.to_json(orient="records")
+        success_response = {
+            "success": "true",
+            "table_name": table_name,
+            "data": json.loads(df_json)
+        }
+        return func.HttpResponse(json.dumps(success_response), mimetype="application/json")
+    except Exception as e:
+        error_message = f'Exception: {str(e)}'
+        print(error_message)
+        error_response = {
+            "success": "false",
+            "errType": "INTERNAL SERVER ERROR",
+            "message": "Internal Server Error"
+        }
+        return func.HttpResponse(json.dumps(error_response), mimetype="application/json", status_code=500)
+    finally:
+        if mydb:
+            mydb.close()
