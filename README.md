@@ -1,1 +1,2 @@
-# Saad
+Azure Function that retrieves table column information from either MySQL or SQL Server based on the input parameters provided in the request body. The code establishes a database connection based on the type specified and retrieves column information for a particular table.
+The main function is triggered by an HTTP request, and it expects certain parameters in the request body, such as db_type, table_name, and database_credentials containing server, database name, username, and password.
